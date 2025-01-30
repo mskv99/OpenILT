@@ -1,2 +1,20 @@
 work/
 __pycache__/
+# Ignore IDE configurations
+.idea/
+
+# Ignore Python compiled files
+__pycache__/
+*.pyc
+
+# Ignore systen files
+*.DS_Store
+
+# Ignore binary data and generated files
+*.gds
+*.png
+*.jpg
+*.jpeg
+
+# Ignore temporary or generated files
+tmp/
