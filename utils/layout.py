@@ -8,6 +8,8 @@ import argparse
 import cv2
 import numpy as np
 from tqdm import tqdm
+from typing import List, Tuple, Union, Any
+from utils.polygon import poly2img, poly2imgShifted
 
 try: 
     import pya
@@ -15,7 +17,22 @@ except Exception:
     import klayout.db as pya
 
 
-def getCell(infile, layer, cell): 
+def getCell(infile, layer, cell):
+    """
+    Purpose: Extracts a specific cell from a layout(infile) and copies the shapes
+    on a specified layer to a new layout
+    Parameters:
+        - infile
+        - layer
+        - cell
+    How it works:
+        - reads a cell by its name
+        - flatten hierarchical structures to a single level
+        - copy shapes from the given layer in infile to output layout
+
+    Returns:
+        layout object
+    """
     ly = infile
     cropped = ly.cell(cell)
     cropped.flatten(-1)
@@ -29,7 +46,20 @@ def getCell(infile, layer, cell):
     return layout
 
 
-def readLayout(filename, layer, crop=True): 
+def readLayout(filename:str, layer:int, crop:bool=True)->pya.Layout:
+    """
+    Purpose: Load layout data and optionally crop the geometry to specific region
+    Parameters:
+        - filename: Path to layout file, (e.g. GDSII)
+        - layer: The layer to extract from the layout
+        - crop: whether to crop the layout to the bounding box of the top cell
+    How it works:
+        - reads the layout file(filename) and extracts the bounding box (bbox) coordinates
+        - crops the layout if crop=True, using cropLayout
+
+    Returns:
+        A cropped or uncropped layout object
+    """
     infile = pya.Layout()
     infile.read(filename)
     bbox = infile.top_cell().bbox()
@@ -45,7 +75,25 @@ def readLayout(filename, layer, crop=True):
     return cropped
 
 
-def createLayout(polygons, layer, dbu): 
+def createLayout(polygons:List[List[Tuple[int, int]]],
+                 layer:int,
+                 dbu:float)->pya.Layout:
+    """
+    Purpose: Construct a fresh layout with user-defined polygons
+    Parameters:
+        - polygons: a list of polygons, where each polygon is a list of (x,y) points
+        - layer: the target layer for the polygons
+        - dbu: database unit (scaling factor for the layout)
+    How it works:
+    Creates a new layout and top-level cell. Inserts each polygon as a shape into the specified layer
+
+    Each polygon is represented by a list of points. These points are transformed into pya.Point objects
+    A new instance of pya.SimplePolygon is created from these points. The polygon is inserted
+    into the top cell of the layout on the specified layer
+
+    Returns:
+        a layout object
+    """
     layout = pya.Layout()
     layout.dbu = dbu
     top = layout.create_cell("TOP")
@@ -56,32 +104,90 @@ def createLayout(polygons, layer, dbu):
         top.shapes(layer).insert(instance)
     return layout
 
+def cropLayout(infile:str,
+               layer:int,
+               beginX:int,
+               beginY:int,
+               endX:int,
+               endY:int)->pya.Layout:
+    """
+    Purpose: Extract specific portions of the layout for further processing
+    Parameters:
+        - infile: input layout object
+        - layer: the layer to extract
+        - beginX, beginY, endX, endY: coordinates of the cropping region in nm
+    How it works:
+    - scales coordinates based on database units
+    - clipping is performed using a bounding box (pya.Box)
+     - flattens the structure and inserts merged shapes back into a new layout
 
-def cropLayout(infile, layer, beginX, beginY, endX, endY): 
+    Returns:
+        a cropped layout object
+    """
+    # 1. Scaling coordinates
+    # The scale value converts the input coordinates (in nanometers) to layout database units (dbu).
+    # This ensures that the coordinates provided by the user match the internal representation of the layout.
     ly = infile
     scale = 0.001 / ly.dbu
     beginX = round(beginX * scale)
     beginY = round(beginY * scale)
     endX = round(endX * scale)
     endY = round(endY * scale)
+    print(f'beginX:{beginX}')
+    print(f'beginY:{beginY}')
+    print(f'endX:{endX}')
+    print(f'endY:{endY}')
+
+    # 2. Creating a cropping box
+    # pya.Box is a geometric rectangle that defines the region of interest in the layout.
     cbox = pya.Box.new(beginX, beginY, endX, endY)
+    # 3. Cropping with ly.clip()
+    # This line performs the actual cropping operation
+    #   - ly.top_cell().cell_index() gets the index of the top cell in the layout hierarchy.
+    #   - cbox specifies the region to clip.
     cropped = ly.clip(ly.top_cell().cell_index(), cbox)
+    # 4. Flattening the cropped cell
+    # ly.cell(cropped) accesses the newly created cell.
+    # flatten(-1) removes the hierarchical structure and brings all geometry into a single layer to simplify operations.
     cropped = ly.cell(cropped)
     cropped.flatten(-1)
+
     layout = pya.Layout()
     layout.dbu = ly.dbu
     top = layout.create_cell("TOP")
     layerFr = infile.layer(layer, 0)
     layerTo = layout.layer(layer, 0)
+    # 5. Creating a pya.Region and merging shapes
+    # pya.Region is a data structure that represents a collection of geometric shapes
+    # It supports various geometric operations such as merging, boolean operations and area calculations
+    # Merging combines overlapping or adjacent shapes into a single unified polygon. This helps simplify
+    # the resulting layout reducing complexity of downstream operations
     region = pya.Region(cropped.begin_shapes_rec(layerFr))
     region.merge()
+    # 6. After merging, the simplified shapes are inserted into the target layer of the new layout.
     top.shapes(layerTo).insert(region)
     # for instance in cropped.each_shape(layerFr): 
     #     top.shapes(layerTo).insert(instance)
     return layout
 
 
-def shape2points(shape, verbose=False): 
+def shape2points(shape, verbose=False)->List[Tuple[Any, Any]]:
+    """
+    Purpose: transform layout shapes(box, path, polygon) into point-based data for geometric analysis.
+    Parameters:
+        - shape
+        - verbose: whether to print debug information
+    How it works:
+        - detects shape types and converts them to lists of points
+        - handles boxes, paths and polygons specifically
+        !!! here point coordinates are in layout database units (DBU)
+        to convert them back to real-world units use the following rule:
+        - x_um = x_dbu * ly.dbu
+        - x_nm = x_dbu * ly.dbu * 1000
+
+    Returns:
+        list of points
+    """
     points = []
     if shape.is_box(): 
         box = shape.box
@@ -89,14 +195,14 @@ def shape2points(shape, verbose=False):
         points.append((box.left, box.top))
         points.append((box.right, box.top))
         points.append((box.right, box.bottom))
-        if verbose == "debug": 
+        if verbose:
             print(f"Box: ({box.bottom}, {box.left}, {box.top}, {box.right})")
     elif shape.is_path(): 
         path = shape.path
         polygon = path.simple_polygon()
         for point in polygon.each_point(): 
             points.append((point.x, point.y))
-        if verbose == "debug": 
+        if verbose:
             print(f"Path: ({polygon})")
             for point in polygon.each_point(): 
                 print(f" -> Point: {point}")
@@ -105,7 +211,7 @@ def shape2points(shape, verbose=False):
         polygon = polygon.to_simple_polygon()
         for point in polygon.each_point(): 
             points.append((point.x, point.y))
-        if verbose == "debug": 
+        if verbose:
             print(f"Polygon: ({polygon})")
             for point in polygon.each_point(): 
                 print(f" -> Point: {point.x}, {point.y}")
@@ -114,8 +220,35 @@ def shape2points(shape, verbose=False):
 
     return points
 
+def yieldShape(infile:pya.Layout, layer:int, verbose:bool=True): # unit: nm
+    """
+    Purpose: iterates over shapes in a layout and yields their points and
+    bounding box coordinates
+    Parameters:
+        -infile: the input layout object
+        -layer: the layer to extract shapes from
+        -verbose: whether to print debug information
+    How it works:
+    - scales coordinates to match layout dbu
+    - extracts shapes from specified layer
+    - converts each shape to points using shape2points
+    - yields the points and bounding box coordinates
 
-def yieldShape(infile, layer, verbose=True): # unit: nm
+    Subtracting minX and minY shifts the coordiantes so that the minimum corner of the
+    bounding box becomes the origin (0,0). This is done to normalize coordinates and
+    simplify further processing. By dividing on scale we convert layout coordinates
+    to real-world units, DBU -> nm
+    Returns:
+        a generator that yields (points, (minX, minY, maxX, maxY))
+    Example:
+        Polygon: ((57600,268600;57600,273850;58300,273850;58300,268600))
+         -> Point: 57600, 268600
+         -> Point: 57600, 273850
+         -> Point: 58300, 273850
+         -> Point: 58300, 268600
+        N-th shape of the polygon: ([(0, 0), (0, 525), (70, 525), (70, 0)], (5760, 26860, 5830, 27385, 5795, 27122))
+
+    """
     ly = infile
     bbox = ly.top_cell().bbox()
     topcell = ly.top_cell()
@@ -128,8 +261,7 @@ def yieldShape(infile, layer, verbose=True): # unit: nm
 
     shapes = topcell.shapes(layer)
     for shape in shapes.each(): 
-        points = shape2points(shape, verbose)
-
+        points = shape2points(shape, verbose=verbose)
         if len(points) > 0: 
             minX = min(map(lambda x: x[0], points))
             minY = min(map(lambda x: x[1], points))
@@ -140,8 +272,23 @@ def yieldShape(infile, layer, verbose=True): # unit: nm
             points = [(round((point[0]-minX)/scale), round((point[1]-minY)/scale)) for point in points]
             yield points, (round(minX/scale), round(minY/scale), round(maxX/scale), round(maxY/scale), round(midX/scale), round(midY/scale))
 
+def getShapes(infile: pya.Layout, layer: int,
+              maxnum: int = None, verbose: bool = True):
+    """
+    Purpose: collects all shapes from layout into lists
+    Parameters:
+        - infile: the input layout object
+        - layer: the layer to extract shapes from
+        - maxnum: maximum number of shapes to collect
+        - verbose: whether to print debug information
+    How it works:
+        - uses yieldshape to iterate over shapes
+        - collects shapes and their coordinates into lists
+        - adjusts coordinates to ensure they are non-negative
 
-def getShapes(infile, layer, maxnum=None, verbose=True): 
+    Returns:
+        two lists: polygons(list of shapes) and coords(list of bounding boxes)
+    """
     iterator = yieldShape(infile, layer, verbose)
     polygons = []
     coords = []
@@ -221,7 +368,37 @@ def yieldShapes(infile, layer, fromX, fromY, toX, toY, anchor="min", verbose=Tru
         if len(polygons) > 0: 
             yield polygons, coords
 
-def yieldCrops(infile, layer, sizeX, sizeY, strideX, strideY, offsetX=0, offsetY=0, fromzero=True, verbose=True): # unit: nm
+def yieldCrops(infile, layer,
+               sizeX, sizeY,
+               strideX, strideY,
+               offsetX=0, offsetY=0,
+               fromzero=True, verbose=True): # unit: nm
+    """
+    Purpose: iterates over a layout, cropping it into smaller tiles
+    Parameters:
+        - infile: the input layout object
+        - layer: the layer to extract
+        - sizeX, sizeY: dimensions of each tile
+        - strideX, strideY: step size for tiling
+        - offsetX, offsetY: offset for the tiling grid
+        - fromzero: whether to start tiling from (0,0)
+        - verbose: whether to print debug information
+
+    How it works:
+    1. Scaling coordiantes
+        - convert input dimensions and strides into DBU (database units)
+    2. Tiling
+        - iterating over layout in steps strideX, strideY
+        - crops the layout into tiles of (sizeX, sizeY)
+    3. Shape extraction
+        - extracts shapes from each tile and converts thenm to points
+    4. Yielding
+        - yields the polygons and coordinates of each tile
+    Returns:
+        a generator that yields (polygons, (x,y)) for each tile
+
+    Returns:
+    """
     ly = infile
     bbox = ly.top_cell().bbox()
     topcell = ly.top_cell().cell_index()
@@ -259,21 +436,33 @@ def yieldCrops(infile, layer, sizeX, sizeY, strideX, strideY, offsetX=0, offsetY
             cell = ly.cell(cropped)
             cell.flatten(-1)
             cell.name = f"Cropped_{idx}-{jdx}_{idx+sizeX}-{jdx+sizeY}"
+            print(cell.name)
 
             shapes = cell.shapes(layer)
             polygons = []
             for shape in shapes.each(): 
-                points = shape2points(shape, verbose)
+                points = shape2points(shape, verbose=False)
 
                 points = [(round((point[0]-idx)/scale), round((point[1]-jdx)/scale)) for point in points]
-                if len(points) > 0: 
+                if len(points) > 0:
                     polygons.append(points)
             
             if len(polygons) > 0: 
                 yield polygons, (round(idx/scale), round(jdx/scale))
 
+def getCrops(infile, layer,
+             sizeX, sizeY,
+             strideX, strideY,
+             offsetX=0, offsetY=0,
+             maxnum=None, fromzero=True,
+             verbose=True): # unit: nm
+    """
+    Purpose:
+    Parameters:
+    How it works:
 
-def getCrops(infile, layer, sizeX, sizeY, strideX, strideY, offsetX=0, offsetY=0, maxnum=None, fromzero=True, verbose=True): # unit: nm
+    Returns:
+    """
     iterator = yieldCrops(infile, layer, sizeX, sizeY, strideX, strideY, offsetX=offsetX, offsetY=offsetY, fromzero=fromzero, verbose=verbose)
     images = []
     coords = []
@@ -287,29 +476,48 @@ def getCrops(infile, layer, sizeX, sizeY, strideX, strideY, offsetX=0, offsetY=0
 
 if __name__ == "__main__": 
     import polygon as poly
+    import matplotlib.pyplot as plt
 
     infile = pya.Layout()
-    infile.read("gds/gcd_45nm.gds")
-    cropped = cropLayout(infile, 11, 0, 0, 32000, 32000)
-    shapes, coords = getShapes(cropped, layer=11, maxnum=None, verbose=True)
+    infile.read("benchmark/gcd_45nm.gds")
+    print(f'Layout database unit: {infile.dbu}')
+    cropped = cropLayout(infile, 11, 0, 31000, 10700, 23000)
+    cropped.write('tmp/cropped_layout.gds')
+    # yieldShape function, demonstrating on 5 shapes
+    new_shape = yieldShape(infile=cropped, layer = 11, verbose=True)
+    for i,shape in enumerate(new_shape):
+        print(f'{i}-th shape of the polygon: {shape}')
+        if i > 5:
+            break
+    shapes, coords = getShapes(cropped, layer = 11, maxnum=None, verbose=True)
+
+    print(f'Shapes: {shapes}\n')
+    print(f'Coords: {coords}\n')
     polygons = []
-    for datum, coord in zip(shapes, coords): 
+    for datum, coord in zip(shapes, coords):
+        # adding minX and minY to normalized coordiantes to obtain the original values
+        # want to obtain the original polygons to write a new layout file with
+        # createLayout function
         polygon = list(map(lambda x: (x[0]+coord[0], x[1]+coord[1]), datum))
         dissected = poly.dissect(polygon, lenCorner=35, lenUniform=70)
         reconstr = poly.segs2poly(dissected)
         polygons.append(reconstr)
-    print(f"In total {len(polygons)} shapes") 
+    plt.figure(figsize=(6,6))
+    plt.title(f'Displaying reconstructed tile variant')
+    plt.imshow(poly2imgShifted(polygons, sizeX=10000, sizeY=10000, scale=1))
+    plt.show()
+    print(f"In total {len(polygons)} shapes")
+    layout = createLayout(polygons, layer=0, dbu=1e-3)
+    cropped.write("tmp/test0.gds")
+    layout.write("tmp/test1.gds")
 
-    layout = createLayout(polygons, layer=11, dbu=1e-3)
-    cropped.write("trivial/test0.gds")
-    layout.write("trivial/test1.gds")
-
-    shapes, coords = getCrops(layout, layer=11, sizeX=570, sizeY=1570, strideX=190, strideY=1400, maxnum=None, verbose=True)
+    shapes, coords = getCrops(layout, layer=0, sizeX=2000, sizeY=2000, strideX=2000, strideY=2000, maxnum=None, verbose=True)
     count = 0
     maxnum = 0
-    for datum, coord in zip(shapes, coords): 
+    for datum, coord in zip(shapes, coords):
         count += 1
-        if len(datum) > maxnum: 
+        if len(datum) > maxnum:
             maxnum = len(datum)
-        # print(f"Shapes: {coord}, {datum}")
+        print(f"Shapes: {coord}, {datum}")
+        cv2.imwrite(f'tmp/example_{count}.jpg',poly2imgShifted(datum, sizeX=2000, sizeY=2000))
     print(f"Count = {count}")
