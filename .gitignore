@@ -17,4 +17,12 @@ __pycache__/
 *.jpeg
 
 # Ignore temporary or generated files
-tmp/
+tmp/*
+!tmp/test1.gds
+!tmp/test0.gds
+!tmp/cropped_layout.gds
+
+.ipynb_checkpoints/
+Makefile
+docs/
+make.bat
