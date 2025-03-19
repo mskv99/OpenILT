@@ -11,12 +11,40 @@ import torch.nn.functional as F
 
 from tqdm import tqdm
 
+'''
+Key concepts:
+    A. Optical Kernels
+    Optical kernels represent the point spread function (PSF) of the lithography system.
+    They model how light propagates through the optical system and interacts with the mask.
+    Different kernels are used for focus and defocus conditions to account for variations in the lithography process
+    
+    B. Aerial Image
+    The aerial image is the light intensity distribution on the wafer.
+    It is computed by convolving the mask pattern with the optical kernel
+    
+    C. Printed Image
+    The printed image is the resist pattern on the wafer after exposure and development.
+    It is computed by applying a sigmoid function to the aerial image, simulating the resist's response to light.
+    
+    D. Edge Placement Error (EPE)
+    EPE measures the deviation between the simulated printed image and the target pattern.
+    It is used to evaluate the quality of the lithography process and identify areas where the mask pattern needs correction.
+'''
+
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 REALTYPE = torch.float32
 COMPLEXTYPE = torch.complex64
 
 class Kernel:
     def __init__(self, basedir="./kernel", defocus=False, conjuncture=False, combo=False, device=DEVICE):
+        '''
+        Manages optical kernels used for lithography simulation
+
+        How it works:
+            - loads kernels from files, (e.g. focus.pt, defocus.pt)
+            - supports different kernel configurations (e.g. focus, defocus, combo)
+            - provides access to kernel data and scaling factors
+        '''
         self._basedir = basedir
         self._defocus = defocus
         self._conjuncture = conjuncture
@@ -60,27 +88,68 @@ class Kernel:
                 return filename + "focus.pt"
 
 def _maskFloat(mask, dose):
+    '''
+    Converts a binary mask into a floating-point mask with a specified dose
+    '''
     return (dose * mask).to(COMPLEXTYPE)
 
 def _kernelMult(kernel, maskFFT, kernelNum):
+    '''
+    Performs frequency domain multiplication of the masks's Fourier transform
+    with the optical kernel. This operation is used to compute the aerial image,
+    which represents the light intensity distribution on the wafer.
+
+    How it works:
+        1. Frequency-Domain Multiplication:
+            The Fourier transform of the mask is multiplied with the optical kernel in the frequency domain.
+            This operation is equivalent to convolution in the spatial domain but is computationally more efficient.
+        2. Quadrant Handling:
+            The frequency domain is divided into four quadrants, and each quadrant is processed independently.
+            This ensures that the multiplication is performed correctly for both positive and negative frequencies.
+        3. Batch Support:
+            The method supports both single masks and batches of masks.
+            For batches, the multiplication is performed independently for each mask in the batch.
+
+    Args:
+        kernel: the optical kernel (point spread function) in the frequency domain. Shape: [kernelNum, knx, kny]
+        maskFFT: Fourier transform of the mask. Shape: [batch_size, 1, imx, imy] or [1, imx, imy]
+        kernelNum: the number of kernels to use
+
+    Returns:
+        the result of multiplying mask's Fourier transform with the kernel in the frequency domain.
+
+        shape: [batch_size, kernelNum, imx, imy] or [kernelNum, imx, imy]
+
+    :meta public:
+    '''
     # kernel: [24, 35, 35]
-    knx, kny = kernel.shape[-2:]
-    knxh, knyh = knx // 2, kny // 2
+    knx, kny = kernel.shape[-2:] # kernel dimensions (e.g. 35x35)
+    knxh, knyh = knx // 2, kny // 2 # half kernel dimension (e.g. 17x17)
+
     output = None
     if kernel.device != maskFFT.device: 
-        kernel = kernel.to(maskFFT.device)
-    if len(maskFFT.shape) == 3: 
+        kernel = kernel.to(maskFFT.device) # Ensure kernel is on same device as maskFFT
+    if len(maskFFT.shape) == 3: # Single mask (no batch dimension)
+        # initialize output tensor, additional dimension for kernelNum, [kernelNum, imx, imy]
         output = torch.zeros([kernelNum, maskFFT.shape[-2], maskFFT.shape[-1]], dtype=maskFFT.dtype, device=maskFFT.device)
+        # Multiply top-left quadrant
         output[:, :knxh+1, :knyh+1] = maskFFT[:, :knxh+1, :knyh+1] * kernel[:kernelNum, -(knxh+1):, -(knyh+1):]
+        # Multiply top-right quadrant
         output[:, :knxh+1, -knyh:] = maskFFT[:, :knxh+1, -knyh:] * kernel[:kernelNum, -(knxh+1):, :knyh]
+        # Multiply bottom-left quadrant
         output[:, -knxh:, :knyh+1] = maskFFT[:, -knxh:, :knyh+1] * kernel[:kernelNum, :knxh, -(knyh+1):]
+        # Multiply bottom-right quadrant
         output[:, -knxh:, -knyh:] = maskFFT[:, -knxh:, -knyh:] * kernel[:kernelNum, :knxh, :knyh]
-    else: 
+    else: # Batch of masks
         assert len(maskFFT.shape) == 4, f"[_kernelMult]: Invalid shape of maskFFT: {maskFFT.shape}"
         output = torch.zeros([maskFFT.shape[0], kernelNum, maskFFT.shape[-2], maskFFT.shape[-1]], dtype=maskFFT.dtype, device=maskFFT.device)
+        # Multiply top-left quadrant
         output[:, :, :knxh+1, :knyh+1] = maskFFT[:, :, :knxh+1, :knyh+1] * kernel[None, :kernelNum, -(knxh+1):, -(knyh+1):]
+        # Multiply top-right quadrant
         output[:, :, :knxh+1, -knyh:]  = maskFFT[:, :, :knxh+1, -knyh:]  * kernel[None, :kernelNum, -(knxh+1):, :knyh]
+        # Multiply bottom-left quadrant
         output[:, :, -knxh:, :knyh+1]  = maskFFT[:, :, -knxh:, :knyh+1]  * kernel[None, :kernelNum, :knxh, -(knyh+1):]
+        # Multiply bottom-right quadrant
         output[:, :, -knxh:, -knyh:]   = maskFFT[:, :, -knxh:, -knyh:]   * kernel[None, :kernelNum, :knxh, :knyh]
     return output
 
@@ -133,35 +202,88 @@ def _computeImageMatrix(cmask, kernel, scale, kernelNum):
     return tmp
 def _computeImageMask(cmask, kernel, scale, kernelNum):
     # cmask: [2048, 2048], kernel: [24, 35, 35], scale: [24]
+    '''
+    Computes the aerial image by applying the optical kernel to the mask in the frequency domain.
+    Converts the mask into the frequency domain using a Fast Fourier Transform (FFT),
+    multiplies it with the kernel, and then converts it back to the spatial domain
+    using an Inverse FFT (IFFT).
+
+    Args:
+        cmask: The mask image. Shape: [batch_size, height, width] or [height, width], f.e. [16, 256, 256]
+        kernel: The optical kernel (point spread function) in the frequency domain. Shape: [24, 35, 35]
+        scale: Scaling factors for the kernels. Shape: [kernelNum], f.e. [24]
+        kernelNum: the number of optical kernels to use. Shape: [], single integer number, f.e. {24}
+
+    Returns:
+        The aerial image in spatial dimension. Shape: [batch_size, kernelNum, height, width]
+    '''
     if scale.device != cmask.device: 
         scale = scale.to(cmask.device)
-    cmask = torch.unsqueeze(cmask, len(cmask.shape) - 2)
-    cmask_fft = torch.fft.fft2(cmask, norm="forward")
-    tmp = _kernelMult(kernel, cmask_fft, kernelNum)
+    cmask = torch.unsqueeze(cmask, len(cmask.shape) - 2) # cmask: [16,1,256,256]
+    cmask_fft = torch.fft.fft2(cmask, norm="forward") # cmask_fft: [16,1,256,256]
+    tmp = _kernelMult(kernel, cmask_fft, kernelNum)# tmp: [16, 24, 256, 256]
     tmp = torch.fft.ifft2(tmp, norm="forward")
     return tmp
-
 
 def _convMatrix(cmask, dose, kernel, scale, kernelNum): 
     image = _computeImageMatrix(cmask, kernel, scale, kernelNum)
     return image
-def _convMask(mask, dose, kernel, scale, kernelNum): 
-    cmask = _maskFloat(mask, dose)
-    image = _computeImageMask(cmask, kernel, scale, kernelNum)
+def _convMask(mask, dose, kernel, scale, kernelNum):
+    '''
+    Applies a dose to the mask and computes the aerial image using _computeImageMask.
+    By multiplying on dose we convert binary mask (0 or 1) into floating point mask (0 or dose)
+
+    Arguments:
+        - mask: The mask image. Shape: [batch_size, height, width] or [height, width].
+        - dose: The dose to apply to the mask into a floating point mask
+        - kernel: The optical kernel. Shape: [kernelNum, kernel_height, kernel_width].
+        - scale: Scaling factors for the kernels. Shape: [kernelNum].
+        - kernelNum: The number of kernels to use
+
+    Returns:
+        The aerial image. Shape: [batch_size, kernelNum, height, width]
+
+    '''
+    cmask = _maskFloat(mask, dose) # cmask: [16, 256, 256]
+    image = _computeImageMask(cmask, kernel, scale, kernelNum) # image: [16, 24, 256, 256]
     return image
 
 def lithosim(mask, dose, kernel, scale, kernelNum): 
-    tmp = _convMask(mask, dose, kernel, scale, kernelNum)
-    if len(mask.shape) == 2: 
-        scale = scale[:kernelNum].unsqueeze(1).unsqueeze(2)
+    '''
+    Simulates the lithography process by computing the printed image from the aerial image.
+    Applies the dose, scales the result, and sums over the kernels.
+
+    Arguments:
+        - mask: The mask image. Shape: [batch_size, height, width] or [height, width], f.e. [16, 256, 256]
+        - dose: The dose to apply to the mask.
+        - kernel: The optical kernel. Shape: [kernelNum, kernel_height, kernel_width]
+        - scale: Scaling factors for the kernels. Shape: [kernelNum]
+        - kernelNum: The number of kernels to use
+
+    Returns:
+        Square magnitude of tmp, sclaled by user defined value,
+        summed over all kernels.
+
+        Shape: [height, width] (single image) or [batch_size, height, width] (batch of images).
+    '''
+    # computing an aerial image
+    tmp = _convMask(mask, dose, kernel, scale, kernelNum) # tmp: [16,24, 256, 256]
+    if len(mask.shape) == 2:
+        # reshaping scale for broadcasting
+        scale = scale[:kernelNum].unsqueeze(1).unsqueeze(2) # scale: [24,1,1]
+        # computing the square magnitude of tmp, scaling it by scale, and summing over all kernels
         return torch.sum(scale * torch.pow(torch.abs(tmp), 2), dim=0)
     else: 
         assert len(mask.shape) == 3, f"[_LithoSim.forward]: Invalid shape: {mask.shape}"
-        scale = scale[:kernelNum].unsqueeze(0).unsqueeze(2).unsqueeze(3)
+        scale = scale[:kernelNum].unsqueeze(0).unsqueeze(2).unsqueeze(3) # scale: [1, 24, 1, 1]
         return torch.sum(scale * torch.pow(torch.abs(tmp), 2), dim=1)
 
-
-def parseConfig(filename): 
+def parseConfig(filename):
+    '''
+    Reads a configuration file and parses it into a dictionary
+    The configuration file contains key-value pairs that define the parameters for the lithography
+    simulation
+    '''
     with open(filename, "r") as fin: 
         lines = fin.readlines()
     results = {}
@@ -173,6 +295,27 @@ def parseConfig(filename):
             results[key] = value
     return results
 class LithoSim(nn.Module): # Mask -> Aerial -> Printed
+    '''
+    The LithoSim class is a PyTorch module that simulates the lithography process, transforming a mask
+    into an aerial image and then into a printed image.
+
+    Simulates the lithography process by:
+        - Padding and scaling the input mask.
+        - Computing the aerial image using optical kernels.
+        - Converting the aerial image into a printed image using a sigmoid function.
+
+    Config parameters:
+        - KernelDir: Directory containing the optical kernels.
+        - KernelNum: Number of kernels to use.
+        - TargetDensity: Target intensity for the printed image.
+        - PrintThresh: Threshold for the printed image.
+        - PrintSteepness: Steepness of the sigmoid function.
+        - DoseMax: Maximum dose.
+        - DoseMin: Minimum dose.
+        - DoseNom: Nominal dose.
+        - Canvas: Size of the canvas (padded mask).
+        - Resolution: Simulation resolution.
+    '''
     def __init__(self, config="./config/lithoiccad13.txt"): 
         super(LithoSim, self).__init__()
         # Read the config from file or a given dict
@@ -196,7 +339,12 @@ class LithoSim(nn.Module): # Mask -> Aerial -> Printed
         self._canvas = self._config["Canvas"]
         self._res = self._config["Resolution"]
 
-    def pad(self, mask): 
+    def pad(self, mask):
+        '''
+        Pads the input mask to match the canvas size.
+        If the mask is smaller than the canvas, it is padded with zeros to
+        match the canvas size. The padding is centerer around the mask
+        '''
         if mask.shape[-2] == self._canvas and mask.shape[-1] == self._canvas: 
             return mask
         result = None
@@ -214,7 +362,10 @@ class LithoSim(nn.Module): # Mask -> Aerial -> Printed
 
         return result
 
-    def unpad(self, image, mask): 
+    def unpad(self, image, mask):
+        '''
+        Removes padding to restore the original mask size.
+        '''
         if mask.shape[-2] == self._canvas and mask.shape[-1] == self._canvas: 
             return mask
         result = None
@@ -230,7 +381,11 @@ class LithoSim(nn.Module): # Mask -> Aerial -> Printed
 
         return result
     
-    def scaleForward(self, mask): 
+    def scaleForward(self, mask):
+        '''
+        Scales the mask down to the simulation resolution using bilinear interpolation.
+        If the mask is already at the correct resolution, no scaling is performed
+        '''
         if mask.shape[-2] == self._res and mask.shape[-1] == self._res: 
             return mask
         result = None
@@ -242,7 +397,11 @@ class LithoSim(nn.Module): # Mask -> Aerial -> Printed
         
         return result
     
-    def scaleBackward(self, mask): 
+    def scaleBackward(self, mask):
+        '''
+         Scales the printed image back to canvas size using bilinear interpolation.
+         If the image is already at the correct size, no scaling is performed
+        '''
         if mask.shape[-2] == self._canvas and mask.shape[-1] == self._canvas: 
             return mask
         result = None
@@ -254,7 +413,18 @@ class LithoSim(nn.Module): # Mask -> Aerial -> Printed
         
         return result
     
-    def forward(self, mask): 
+    def forward(self, mask):
+        '''
+        How it works:
+            1. The mask is padded to match the canvas size and scaled to simulation resolution
+            2. Aerial image is computed for nominal, maximum and minimum dose conditions.
+            3. The aerial image is converted into a printed image using sigmoid function
+            4. The printed image is scaled back to canvas size and unpadded (remove padding) to match the original mask size
+
+        Returns:
+            printed images for nominal, minimum and maximum dose conditions
+        '''
+
         padded = self.pad(mask)
         scaled = self.scaleForward(padded)
 
@@ -298,26 +468,33 @@ class PatchSim:
                 max1 = coord1
         return coord0, coord1
     
-    def concat(self, patches, coords): 
+    def concat(self, patches, coords):
+        # compute the size of the full-chip image, height and width
         max0, max1 = self.getSize(coords)
+        # initialize 2 tensors:
+        # concated - a tensor to store the combined full-chip image, initialized with zeros
+        # counts - a tensor to track the number of patches contributing to each pixel in the full-chip image
         concated = torch.zeros([max0, max1], dtype=REALTYPE, device=DEVICE)
         counts = torch.zeros([max0, max1], dtype=REALTYPE, device=DEVICE)
-        for idx, coord in enumerate(coords): 
-            coord0a = round(self._scale*coord[1])
-            coord1a = round(self._scale*coord[0])
-            coord0b = min(coord0a + patches[idx].shape[0], concated.shape[0])
-            coord1b = min(coord1a + patches[idx].shape[1], concated.shape[1])
-            masked = torch.zeros_like(patches[idx])
-            valid0 = round(patches[idx].shape[0] * 0.25)
-            valid1 = round(patches[idx].shape[1] * 0.25)
+        for idx, coord in enumerate(coords): # iterate over each patch and its bottom-left coordinates
+            coord0a = round(self._scale*coord[1]) # start row in the full-chip image, coord0a: 0
+            coord1a = round(self._scale*coord[0]) # start column in the full-chip image, coord1a:0
+            coord0b = min(coord0a + patches[idx].shape[0], concated.shape[0]) # end row, coord0b: 250
+            coord1b = min(coord1a + patches[idx].shape[1], concated.shape[1]) # end column, coord0b:250
+            # a mask is created to exclude boundary regions from the patch
+            # the mask is set to 1 in the valid region and 0 in the boundary region
+            # the valid region is defined as the central 50% of the patch (25% from each patch is excluded)
+            masked = torch.zeros_like(patches[idx]) # masked: (250, 250)
+            valid0 = round(patches[idx].shape[0] * 0.25) # valid region height: 62.5
+            valid1 = round(patches[idx].shape[1] * 0.25) # valid region width: 62.5
             if coord0a == 0 and coord1a == 0: 
-                masked[:, :] = 1
+                masked[:, :] = 1 # include the entire patch
             elif coord0a == 0: 
-                masked[:, valid1:-valid1] = 1
+                masked[:, valid1:-valid1] = 1 # exclude left and right boundaries
             elif coord1a == 0: 
-                masked[valid0:-valid0, :] = 1
+                masked[valid0:-valid0, :] = 1 # exclude top and bottim boundaries
             else: 
-                masked[valid0:-valid0, valid1:-valid1] = 1
+                masked[valid0:-valid0, valid1:-valid1] = 1 # exclude left/right and top/bottom boundaries
             coord0a = max(coord0a, 0)
             coord1a = max(coord1a, 0)
             start0 = max(-coord0a, 0)
@@ -327,8 +504,8 @@ class PatchSim:
             # print(concated.shape, patches[idx].shape, masked.shape, coord0a, coord0b, start0, size0, coord1a, coord1b, start1, size1)
             concated[coord0a:coord0b, coord1a:coord1b] += (patches[idx] * masked)[start0:size0, start1:size1]
             counts[coord0a:coord0b, coord1a:coord1b] += (torch.ones_like(patches[idx]) * masked)[:size0, :size1]
-        counts[counts <= 1e-3] = 1e-3
-        concated = concated / counts
+        counts[counts <= 1e-3] = 1e-3 # avoiding division by zero
+        concated = concated / counts # normalizing
         return concated
     
     def simulate(self, crops, coords, batchsize=16): 
@@ -340,11 +517,11 @@ class PatchSim:
             batch = []
             for jdx in range(idx, min(len(crops), idx+batchsize)): 
                 crop = crops[jdx]
-                image = poly.poly2img(crop, sizeX=self._sizeX, sizeY=self._sizeY, scale=self._scale) / 255
-                image = torch.tensor(image, dtype=REALTYPE, device=DEVICE)
+                image = poly2img(crop, sizeX=self._sizeX, sizeY=self._sizeY, scale=self._scale) / 255
+                image = torch.tensor(image, dtype=REALTYPE, device=DEVICE) # image: (250, 250)
                 batch.append(image)
-            image = torch.stack(batch, dim=0)
-            pNom, pMax, pMin = self._simulator(image)
+            image = torch.stack(batch, dim=0) # batch: (2, 250, 250)
+            pNom, pMax, pMin = self._simulator(image) # pNom, pMax, pMin: (2, 250, 250)
             for jdx in range(idx, min(len(crops), idx+batchsize)): 
                 index = jdx - idx
                 savedMask.append(image[index])
@@ -492,42 +669,84 @@ class PatchSim:
 
         return valids, lefts, rights, ups, downs
 
-try: 
-    import pya
-except Exception: 
-    import klayout.db as pya
-import matplotlib.pyplot as plt
-import utils.polygon as poly
-import utils.layout as layout
-if __name__ == "__main__": 
-    infile = layout.readLayout("gds/gcd_45nm.gds", 11)
-    shapes, poses = layout.getShapes(infile, layer=11, maxnum=None, verbose=False)
-    segments = []
-    polygons = []
-    for datum, coord in zip(shapes, poses): 
-        polygon = list(map(lambda x: (x[0]+coord[0], x[1]+coord[1]), datum))
-        dissected = poly.dissect(polygon, lenCorner=35, lenUniform=70)
-        reconstr = poly.segs2poly(dissected)
-        segments.extend(dissected)
-        polygons.append(reconstr)
-    print(f"In total {len(polygons)} shapes") 
+if __name__ == "__main__":
 
-    crops, coords = layout.getCrops(infile, layer=11, sizeX=1200, sizeY=1600, strideX=570, strideY=700, maxnum=None, verbose=False)
-    print(f"In total {len(crops)} crops") 
+    import matplotlib.pyplot as plt
+    from utils.layout import getCrops, getShapes, readLayout
+    from utils.polygon import dissect, segs2poly, poly2imgShifted, poly2img
 
-    bigsim = PatchSim(LithoSim(), sizeX=1200, sizeY=1600, scale=0.125)
-    bignom, bigmax, bigmin, origin = bigsim.simulate(crops, coords)
+    try:
+        import pya
+    except Exception:
+        import klayout.db as pya
 
-    epe = bigsim.checkEPE(segments, bignom, origin, distance=16)
-    print(f"EPE violation: {epe}")
 
-    origin = origin.detach().cpu().numpy()
-    bignom = bignom.detach().cpu().numpy()
-    cv2.imwrite("trivial/origin.png", np.flip(origin*255, axis=0))
-    cv2.imwrite("trivial/simed.png", np.flip(bignom*255, axis=0))
+    ORIG_VERSION = False
+    if ORIG_VERSION:
+        infile = readLayout("benchmark/gcd_45nm.gds", 11)
+        shapes, poses = getShapes(infile, layer=11, maxnum=None, verbose=False)
+        segments = []
+        polygons = []
+        for datum, coord in zip(shapes, poses):
+            polygon = list(map(lambda x: (x[0]+coord[0], x[1]+coord[1]), datum))
+            dissected = dissect(polygon, lenCorner=35, lenUniform=70)
+            reconstr = segs2poly(dissected)
+            segments.extend(dissected)
+            polygons.append(reconstr)
+        print(f"In total {len(polygons)} shapes")
 
-    plt.subplot(1, 2, 1)
-    plt.imshow(origin, origin="lower")
-    plt.subplot(1, 2, 2)
-    plt.imshow(bignom, origin="lower")
-    # plt.show()
+        crops, coords = getCrops(infile, layer=11, sizeX=1200, sizeY=1600, strideX=570, strideY=700, maxnum=None, verbose=False)
+        print(f"In total {len(crops)} crops")
+
+        bigsim = PatchSim(LithoSim(), sizeX=1200, sizeY=1600, scale=0.125)
+        bignom, bigmax, bigmin, origin = bigsim.simulate(crops, coords)
+        print(bignom.shape)
+
+        epe = bigsim.checkEPE(segments, bignom, origin, distance=16)
+        print(f"EPE violation: {epe}")
+
+        origin = origin.detach().cpu().numpy()
+        bignom = bignom.detach().cpu().numpy()
+        cv2.imwrite("tmp/origin.png", np.flip(origin*255, axis=0))
+        cv2.imwrite("tmp/simed.png", np.flip(bignom*255, axis=0))
+
+        plt.subplot(1, 2, 1)
+        plt.imshow(origin, origin="lower")
+        plt.subplot(1, 2, 2)
+        plt.imshow(bignom, origin="lower")
+        plt.show()
+    else:
+        infile = readLayout(filename = 'tmp/test1.gds', layer = 0)
+        crops, coords = getCrops(infile, layer=0, sizeX=2000, sizeY=2000, strideX=1000, strideY=1000, maxnum=2, verbose=True)
+        # combined_crop, combined_coord = getCrops(infile, layer=0, sizeX=2000, sizeY=4000, strideX=2000, strideY=4000, maxnum=2, verbose=False)
+        print(f"In total {len(crops)} crops")
+
+        first_poly = list(list(map(lambda x: (x[0] + 2000, x[1] + 2000), crops[0][0])))
+        plt.subplot(1, 2, 1)
+        plt.imshow(poly2imgShifted(crops[0], sizeX=2000, sizeY=2000))
+        plt.subplot(1, 2, 2)
+        plt.imshow(poly2imgShifted(crops[1], sizeX=2000, sizeY=2000))
+        # plt.subplot(1, 3, 3)
+        # plt.imshow(poly2imgShifted(first_poly + crops[1], sizeX=2000, sizeY=4000))
+        plt.show()
+
+        bigsim = PatchSim(LithoSim(), sizeX=2000, sizeY=2000, scale=0.125)
+        bignom, bigmax, bigmin, origin = bigsim.simulate(crops, coords)
+        print(f'Bignom shape: {bignom.shape}')
+        print(f'Origin shape: {origin.shape}')
+
+        # plt.subplot(1, 2, 1)
+        # plt.imshow(poly2imgShifted(origin.numpy(), sizeX=2000, sizeY=4000))
+        # plt.subplot(1, 2, 2)
+        # plt.imshow(poly2imgShifted(bignom.numpy(), sizeX=2000, sizeY=4000))
+        # plt.imshow()
+
+        # in case want to save an image with cv2
+        cv2.imshow('Displaying concatenated patches from layout', np.flip(origin.detach().cpu().numpy()*255, axis=0))
+        cv2.waitKey(0)
+
+        cv2.imshow('Displaying lithography simulation on concatenated patches from layout', np.flip(bignom.detach().cpu().numpy()*255, axis=0))
+        cv2.waitKey(0)
+
+
+

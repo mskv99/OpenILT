@@ -50,8 +50,10 @@ def cropSegments(segments, layer=11, dbu=1e-3, sizeX=1200, sizeY=1600, strideX=5
     print(f"In total {len(polygons)} shapes")
 
     reconstr = layout.createLayout(polygons, layer=layer, dbu=dbu)
-    crops, coords = layout.getCrops(reconstr, layer=layer, sizeX=sizeX, sizeY=sizeY, strideX=strideX, strideY=strideY, 
-                                    maxnum=None, fromzero=fromzero, verbose=False)
+    crops, coords = layout.getCrops(reconstr, layer=layer, sizeX=sizeX, sizeY=sizeY,
+                                    strideX=strideX, strideY=strideY,
+                                    maxnum=None, fromzero=fromzero,
+                                    verbose=False)
     print(f"In total {len(crops)} crops")
 
     return crops, coords
@@ -64,12 +66,12 @@ BATCHSIZE = 64
 MAXDIST = 24
 SCALE = 0.125
 if __name__ == "__main__": 
-    filename = "benchmark/gcd_45nm.gds" if len(sys.argv) < 2 else sys.argv[1]
+    filename = "benchmark/cell10.gds" if len(sys.argv) < 2 else sys.argv[1] # "benchmark/gcd_45nm.gds" if len(sys.argv) < 2 else sys.argv[1]
     crop = False
 
     print(f"MB-OPC for {filename}")
 
-    segments = dissectLayout(filename, layer=11, lenCorner=16, lenUniform=32, crop=crop)
+    segments = dissectLayout(filename, layer=3, lenCorner=16, lenUniform=32, crop=crop)
     linked, flattened = flattenSegments(segments)
     linkedEPE = copy.deepcopy(linked)
     refsEPE = copy.deepcopy(flattened)
@@ -93,7 +95,7 @@ if __name__ == "__main__":
         features.append((length, directH, directV, centerX, centerY, turn))
 
     timeSegAll = time.time()
-    segments = dissectLayout(filename, layer=11, lenCorner=16, lenUniform=32, crop=crop)
+    segments = dissectLayout(filename, layer=3, lenCorner=16, lenUniform=32, crop=crop) #layer=11
     linked, flattened = flattenSegments(segments)
     reference = copy.deepcopy(flattened)
     timeSegAll = time.time() - timeSegAll
@@ -107,7 +109,7 @@ if __name__ == "__main__":
     print(" ->", bins)
 
     bigsim = litho.PatchSim(litho.LithoSim(), sizeX=1200, sizeY=1600, scale=SCALE)
-    crops, coords = cropSegments(linked, layer=11, dbu=1e-3, sizeX=1200, sizeY=1600, strideX=570, strideY=700, fromzero=True)
+    crops, coords = cropSegments(linked, layer=3, dbu=1e-3, sizeX=1200, sizeY=1600, strideX=570, strideY=700, fromzero=True)
     bignom, bigmax, bigmin, origin = bigsim.simulate(crops, coords, batchsize=BATCHSIZE)
     
     valids, lefts, rights, ups, downs = bigsim.validate(refsEPE, origin)
@@ -123,7 +125,7 @@ if __name__ == "__main__":
     for step in range(STEPS): 
         print(f"Step {step}")
         timePart = time.time()
-        crops, coords = cropSegments(linked, layer=11, dbu=1e-3, sizeX=1200, sizeY=1600, strideX=570, strideY=700, fromzero=True)
+        crops, coords = cropSegments(linked, layer=3, dbu=1e-3, sizeX=1200, sizeY=1600, strideX=570, strideY=700, fromzero=True)
         timePart = time.time() - timePart
         timePartAll += timePart
         

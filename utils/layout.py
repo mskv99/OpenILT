@@ -16,19 +16,20 @@ try:
 except Exception: 
     import klayout.db as pya
 
-
 def getCell(infile, layer, cell):
     """
-    Purpose: Extracts a specific cell from a layout(infile) and copies the shapes
+    Extracts a specific cell from a layout(infile) and copies the shapes
     on a specified layer to a new layout
-    Parameters:
-        - infile
-        - layer
-        - cell
+
     How it works:
         - reads a cell by its name
         - flatten hierarchical structures to a single level
         - copy shapes from the given layer in infile to output layout
+
+    Args:
+        infile: input file with layout for processing
+        layer: number of layer to operate with
+        cell: name of the cell to operate with
 
     Returns:
         layout object
@@ -48,14 +49,16 @@ def getCell(infile, layer, cell):
 
 def readLayout(filename:str, layer:int, crop:bool=True)->pya.Layout:
     """
-    Purpose: Load layout data and optionally crop the geometry to specific region
-    Parameters:
-        - filename: Path to layout file, (e.g. GDSII)
-        - layer: The layer to extract from the layout
-        - crop: whether to crop the layout to the bounding box of the top cell
+    Load layout data and optionally crop the geometry to specific region
+
     How it works:
-        - reads the layout file(filename) and extracts the bounding box (bbox) coordinates
-        - crops the layout if crop=True, using cropLayout
+    - reads the layout file(filename) and extracts the bounding box (bbox) coordinates
+    - crops the layout if crop=True, using cropLayout
+
+    Args:
+        - filename: path to layout file, (e.g. GDSII)
+        - layer: the layer to extract from the layout
+        - crop: whether to crop the layout to the bounding box of the top cell
 
     Returns:
         A cropped or uncropped layout object
@@ -74,22 +77,24 @@ def readLayout(filename:str, layer:int, crop:bool=True)->pya.Layout:
         cropped = infile
     return cropped
 
-
 def createLayout(polygons:List[List[Tuple[int, int]]],
                  layer:int,
                  dbu:float)->pya.Layout:
     """
-    Purpose: Construct a fresh layout with user-defined polygons
-    Parameters:
-        - polygons: a list of polygons, where each polygon is a list of (x,y) points
-        - layer: the target layer for the polygons
-        - dbu: database unit (scaling factor for the layout)
-    How it works:
-    Creates a new layout and top-level cell. Inserts each polygon as a shape into the specified layer
+    Construct a fresh layout with user-defined polygons.
+    Creates a new layout and top-level cell.
+    Inserts each polygon as a shape into the specified layer
 
-    Each polygon is represented by a list of points. These points are transformed into pya.Point objects
-    A new instance of pya.SimplePolygon is created from these points. The polygon is inserted
-    into the top cell of the layout on the specified layer
+    How it works:
+        - Each polygon is represented by a list of points.
+        - These points are transformed into pya.Point objects
+        - A new instance of pya.SimplePolygon is created from these points.
+        - The polygon is inserted into the top cell of the layout on the specified layer
+
+    Args:
+        polygons: a list of polygons, where each polygon is a list of (x,y) points
+        layer: the target layer for the polygons
+        dbu: database unit (scaling factor for the layout)
 
     Returns:
         a layout object
@@ -111,15 +116,17 @@ def cropLayout(infile:str,
                endX:int,
                endY:int)->pya.Layout:
     """
-    Purpose: Extract specific portions of the layout for further processing
-    Parameters:
-        - infile: input layout object
-        - layer: the layer to extract
-        - beginX, beginY, endX, endY: coordinates of the cropping region in nm
+    Extract specific portions of the layout for further processing
+
     How it works:
-    - scales coordinates based on database units
-    - clipping is performed using a bounding box (pya.Box)
-     - flattens the structure and inserts merged shapes back into a new layout
+        - scales coordinates based on database units
+        - clipping is performed using a bounding box (pya.Box)
+        - flattens the structure and inserts merged shapes back into a new layout
+
+    Args:
+        infile: input layout object
+        layer: the layer to extract
+        beginX, beginY, endX, endY: coordinates of the cropping region in nm
 
     Returns:
         a cropped layout object
@@ -173,17 +180,23 @@ def cropLayout(infile:str,
 
 def shape2points(shape, verbose=False)->List[Tuple[Any, Any]]:
     """
-    Purpose: transform layout shapes(box, path, polygon) into point-based data for geometric analysis.
-    Parameters:
-        - shape
-        - verbose: whether to print debug information
+    Transform layout shapes(box, path, polygon) into point-based data for geometric analysis.
+
     How it works:
         - detects shape types and converts them to lists of points
         - handles boxes, paths and polygons specifically
-        !!! here point coordinates are in layout database units (DBU)
-        to convert them back to real-world units use the following rule:
-        - x_um = x_dbu * ly.dbu
-        - x_nm = x_dbu * ly.dbu * 1000
+
+    Args:
+        shape: the particular layot shape(box, path,polygon)
+        verbose: whether to print debug information
+
+    Note:
+        Here point coordinates are in layout database units (DBU).
+        To convert them back to real-world units use the following rule:
+
+        .. parsed-literal::
+            x_um = x_dbu * ly.dbu
+            x_nm = x_dbu * ly.dbu * 1000
 
     Returns:
         list of points
@@ -222,31 +235,37 @@ def shape2points(shape, verbose=False)->List[Tuple[Any, Any]]:
 
 def yieldShape(infile:pya.Layout, layer:int, verbose:bool=True): # unit: nm
     """
-    Purpose: iterates over shapes in a layout and yields their points and
+    Iterates over shapes in a layout and yields their points and
     bounding box coordinates
-    Parameters:
-        -infile: the input layout object
-        -layer: the layer to extract shapes from
-        -verbose: whether to print debug information
-    How it works:
-    - scales coordinates to match layout dbu
-    - extracts shapes from specified layer
-    - converts each shape to points using shape2points
-    - yields the points and bounding box coordinates
 
-    Subtracting minX and minY shifts the coordiantes so that the minimum corner of the
-    bounding box becomes the origin (0,0). This is done to normalize coordinates and
-    simplify further processing. By dividing on scale we convert layout coordinates
-    to real-world units, DBU -> nm
-    Returns:
-        a generator that yields (points, (minX, minY, maxX, maxY))
+    How it works:
+        - scales coordinates to match layout dbu
+        - extracts shapes from specified layer
+        - converts each shape to points using shape2points
+        - yields the points and bounding box coordinates
+
+    Args:
+        infile: the input layout object
+        layer: the layer to extract shapes from
+        verbose: whether to print debug information
+
+    Yields:
+        (points, (minX, minY, maxX, maxY))
+
+    Note:
+        Subtracting minX and minY shifts the coordiantes so that the minimum corner of the
+        bounding box becomes the origin (0,0). This is done to normalize coordinates and
+        simplify further processing. By dividing on scale we convert layout coordinates
+        to real-world units, DBU -> nm
+
     Example:
-        Polygon: ((57600,268600;57600,273850;58300,273850;58300,268600))
-         -> Point: 57600, 268600
-         -> Point: 57600, 273850
-         -> Point: 58300, 273850
-         -> Point: 58300, 268600
-        N-th shape of the polygon: ([(0, 0), (0, 525), (70, 525), (70, 0)], (5760, 26860, 5830, 27385, 5795, 27122))
+        .. parsed-literal::
+            Polygon: ((57600,268600;57600,273850;58300,273850;58300,268600))
+             -> Point: 57600, 268600
+             -> Point: 57600, 273850
+             -> Point: 58300, 273850
+             -> Point: 58300, 268600
+            N-th shape of the polygon: ([(0, 0), (0, 525), (70, 525), (70, 0)], (5760, 26860, 5830, 27385, 5795, 27122))
 
     """
     ly = infile
@@ -275,16 +294,18 @@ def yieldShape(infile:pya.Layout, layer:int, verbose:bool=True): # unit: nm
 def getShapes(infile: pya.Layout, layer: int,
               maxnum: int = None, verbose: bool = True):
     """
-    Purpose: collects all shapes from layout into lists
-    Parameters:
-        - infile: the input layout object
-        - layer: the layer to extract shapes from
-        - maxnum: maximum number of shapes to collect
-        - verbose: whether to print debug information
+    Collects all shapes from layout into lists
+
     How it works:
         - uses yieldshape to iterate over shapes
         - collects shapes and their coordinates into lists
         - adjusts coordinates to ensure they are non-negative
+
+    Args:
+        infile: the input layout object
+        layer: the layer to extract shapes from
+        maxnum: maximum number of shapes to collect
+        verbose: whether to print debug information
 
     Returns:
         two lists: polygons(list of shapes) and coords(list of bounding boxes)
@@ -374,8 +395,20 @@ def yieldCrops(infile, layer,
                offsetX=0, offsetY=0,
                fromzero=True, verbose=True): # unit: nm
     """
-    Purpose: iterates over a layout, cropping it into smaller tiles
-    Parameters:
+    Iterates over a layout, cropping it into smaller tiles
+
+    How it works:
+        1. Scaling coordiantes
+            - convert input dimensions and strides into DBU (database units)
+        2. Tiling
+            - iterating over layout in steps strideX, strideY
+            - crops the layout into tiles of (sizeX, sizeY)
+        3. Shape extraction
+            - extracts shapes from each tile and converts thenm to points
+        4. Yielding
+            - yields the polygons and coordinates of each tile
+
+    Args:
         - infile: the input layout object
         - layer: the layer to extract
         - sizeX, sizeY: dimensions of each tile
@@ -384,22 +417,19 @@ def yieldCrops(infile, layer,
         - fromzero: whether to start tiling from (0,0)
         - verbose: whether to print debug information
 
-    How it works:
-    1. Scaling coordiantes
-        - convert input dimensions and strides into DBU (database units)
-    2. Tiling
-        - iterating over layout in steps strideX, strideY
-        - crops the layout into tiles of (sizeX, sizeY)
-    3. Shape extraction
-        - extracts shapes from each tile and converts thenm to points
-    4. Yielding
-        - yields the polygons and coordinates of each tile
-    Returns:
-        a generator that yields (polygons, (x,y)) for each tile
-
-    Returns:
+    Yields:
+        (polygons, (x,y)) for each tile
     """
     ly = infile
+    print(f'Getting cells from a layout...')
+    num_cells = ly.cells()
+
+    # Iterate over all cells and print their names
+    for cell_index in range(num_cells):
+        cell = ly.cell(cell_index)
+        cell_name = cell.name
+        print(f"Cell {cell_index}: {cell_name}")
+
     bbox = ly.top_cell().bbox()
     topcell = ly.top_cell().cell_index()
     layer = ly.layer(layer, 0)
@@ -457,11 +487,25 @@ def getCrops(infile, layer,
              maxnum=None, fromzero=True,
              verbose=True): # unit: nm
     """
-    Purpose:
-    Parameters:
+    Based on yieldCrops function returns polygon coordinates inside every crop in a layout
+    and (x,y) positions of the crops
+
     How it works:
+        - gets an iterator with the help of yieldCrops
+        - adds elements to empty lists
+
+    Args:
+        infile: the input layout object
+        layer: the layer to extract
+        sizeX, sizeY: dimensions of each tile
+        strideX, strideY: step size for tiling
+        offsetX, offsetY: offset for the tiling grid
+        maxnum: maximum number of crops to process
+        fromzero: whether to start tiling from (0,0)
+        verbose: whether to print debug information
 
     Returns:
+        list of polygon coordianates from layout crops and list of (x,y) positions of these crops
     """
     iterator = yieldCrops(infile, layer, sizeX, sizeY, strideX, strideY, offsetX=offsetX, offsetY=offsetY, fromzero=fromzero, verbose=verbose)
     images = []

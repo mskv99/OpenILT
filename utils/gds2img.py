@@ -129,8 +129,8 @@ if __name__ == "__main__":
     import matplotlib.pyplot as plt
     import pylitho.exact as lithosim
     import torch
-    filename = "utils/cell68.gds"
-    layer = 3
+    filename = "tmp/test1.gds"
+    layer = 0
     infile = readLayout(filename, layer, crop=False)
     polygons, coords = getShapes(infile, layer, maxnum=None, verbose=True)
     image = poly2img(polygons, sizeX=1024, sizeY=1024, scale=1.0)/255
@@ -141,7 +141,6 @@ if __name__ == "__main__":
     printed = np.round(printedNom.detach().cpu().numpy())
     plt.subplot(1, 2, 1)
     plt.imshow(image)
-    plt.subplot(1, 2, 2)
+    plt.show()
     plt.imshow(printed)
     plt.show()
-    

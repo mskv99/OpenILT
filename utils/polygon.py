@@ -12,24 +12,34 @@ import numpy as np
 from tqdm import tqdm
 from typing import List, Tuple
 
-
 def poly2img(polygons: List[List[Tuple[int, int]]],
              sizeX: int,
              sizeY: int,
              scale: float = 1.0) -> np.ndarray:
-    '''
-    Purpose: Converts a list of polygons into a 2D image representation
-    Parameters:
-        - polygons: a list of polygons where each polygon is a list of (x,y) coordinates
-        - SizeX, SizeY: Image dimensions
-        - Scale: A scaling factor for resizing polygons
-    How it works?
-        - Creates a blank image
-        - Fills the defined polygons using OpenCV's cv2.fillPolly()
-    Returns: an image with drawn polygons
-    Note: if we want to test on a single polygons, we need to wrap the passed variable in a list, f.e.
-    poly2img(polygons=[polygon], sizeX=, sizeY=, scale=), where polygon=[(), (), ()]
-    '''
+    """
+    Converts a list of polygons into a 2D image representation.
+
+    How it works:
+        - creates a blank image
+        - fills the defined polygons using OpenCV's cv2.fillPolly().
+
+    Args:
+        polygons: a list of polygons where each polygon is a list of (x,y) coordinates
+        sizeX, sizeY: Image dimensions
+        scale: A scaling factor for resizing polygons
+
+    Returns:
+        np.ndarray: an image with drawn polygons
+
+    Note:
+        if we want to test on a single polygons, we need to wrap the passed variable in a list, f.e.
+
+        .. code-block::
+
+            poly2img(polygons=[polygon], sizeX=, sizeY=, scale=),
+
+        where polygon=[(), (), ()]
+    """
     sizeX = round(sizeX * scale)
     sizeY = round(sizeY * scale)
     img = np.zeros([sizeY, sizeX], dtype=np.float32)
@@ -40,13 +50,18 @@ def poly2img(polygons: List[List[Tuple[int, int]]],
     return img
 
 def polysMin(polygons: List[List[Tuple[int, int]]]) -> Tuple[int, int]:
-    '''
-    Purpose: finds the minimum x and y corrdinates among all polygons
-    Parameters: a list of polygons
+    """
+    Finds the minimum x and y coordinates among all polygons.
+
     How it works:
-        - Iterates over all polygon points to compute the smallest x and y values
-    Returns: a tuple (minX, minY) with smallest coordinates among all polygons
-    '''
+        Iterates over all polygon points to compute the smallest x and y values
+
+    Args:
+        polygons: a list of polygons.
+
+    Returns:
+        a tuple (minX, minY) with smallest coordinates among all polygons
+    """
     minX = None
     minY = None
     for idx in range(len(polygons)): 
@@ -60,17 +75,27 @@ def poly2imgShifted(polygons:List[List[Tuple[int, int]]],
                     sizeY:int,
                     scale:int = 1.0,
                     shifted: Tuple[int, int] = None) -> np.ndarray:
-    '''
-    Purpose: draws polyons on image after shifting them by their minimum coordinates
-    Parameters: Same as poly2img, with an additional optional shifted parameter to specify
-    a custom shift (minX, minY)
+    """
+    Draws polygons on image after shifting them by their minimum coordinates
+
     How it works:
-        - Translates polygons by subracting (minX, minY) from each point in everay polygon
-        - Fills the translated polygons on the image
-    Retruns: a shifted and reversed image
-    Note: img[::-1, :] - flips the image vertically (along the y-axis), reverses the row order but keeps the columns
-    intact
-    '''
+    - Translates polygons by subracting (minX, minY) from each point in every polygon
+    - Fills the translated polygons on the image
+
+    Args:
+        polygons: a list of polygons where each polygon is a list of (x,y) coordinates
+        sizeX, sizeY: image dimensions
+        scale: a scaling factor for resizing polygons
+        shifted: an optional parameter to define a custom shift instead on shifting
+        coordinates by (minX, minY)
+
+    Returns:
+        a shifted and reversed image
+
+    Note:
+        img[::-1, :] - flips the image vertically (along the y-axis),
+        reverses the row order but keeps the columns intact
+    """
     sizeX = round(sizeX * scale)
     sizeY = round(sizeY * scale)
     img = np.zeros([sizeY, sizeX], dtype=np.float32)
@@ -85,16 +110,26 @@ def poly2imgShifted(polygons:List[List[Tuple[int, int]]],
 def lines(polygon: List[Tuple[int, int]]
           ) -> List[Tuple[Tuple[int, int], Tuple[int, int]]]:
     '''
-    Purpose: breaks a polygon into its line segments
-    Parameters:
-        - polygon: a list of points representing the polygon vertices
-    !!! Function works ONLY with a single polygon, f.e. [(x1, y1), (x2,y2), (x3,y3)]
-    How it works:
-        - connects each vertex to the next, closing a polygon
-    Returns: a list of line segments as tuples ((x1,y1), (x2,y2)), f.e.
-    For polygon [(500, 500), (500, 1000), (700, 1000), (700, 500)] function returns:
+    Breaks a polygon into its line segments. Connects each vertex to the next,
+    closing a polygon
 
-    [((500, 500), (500, 1000)), ((500, 1000), (700, 1000)), ((700, 1000), (700, 500)), ((700, 500), (500, 500))]
+    Args:
+        polygon: a list of points representing the polygon vertices
+
+    Note:
+        Function works ONLY with a single polygon, f.e. [(x1, y1), (x2,y2), (x3,y3)]
+
+    Returns:
+        a list of line segments as tuples ((x1,y1), (x2,y2))
+
+    Example:
+        .. parsed-literal::
+
+            For polygon [(500, 500), (500, 1000), (700, 1000), (700, 500)]
+
+            function returns:
+
+            [((500, 500), (500, 1000)), ((500, 1000), (700, 1000)), ((700, 1000), (700, 500)), ((700, 500), (500, 500))]
     '''
     results = []
     for idx in range(len(polygon)): 
@@ -106,24 +141,31 @@ def dissect(polygon: List[Tuple[int, int]],
             verbose: bool = False
             ) -> List[Tuple[Tuple[int, int], Tuple[int, int]]]:
     '''
-    Purpose: Subdivies the edges of a polygon into smaller line segments
-    Parameters:
-        - polygon: a list of points forming a polygon
-        - lenCorner: corner segment length
-        - lenUniform: Uniform segment length for dividing long edges
+    Subdivies the edges of a polygon into smaller line segments.
+
     How it works:
         - splits edges based on whether they are vertical or horizontal
         - ensures that large segments are divided into smaller, equal-length parts
+
+    Args:
+        polygon: a list of points forming a polygon
+        lenCorner: corner segment length
+        lenUniform: uniform segment length for dividing long edges
+
     Returns:
         a list of dissected segments
-    Note: the code explanation will be provided for the polygon defined as follows:
-    [(500, 500), (500, 1000), (700, 1000), (700,500)]
 
-    (500, 500)  <-  (700, 500)
-        |               |
-    (500, 1000) -> (700, 1000)
+    Note:
+        .. parsed-literal::
+            The code explanation will be provided for the polygon defined as follows:
 
-    We will observe the first line segment - ((500, 500), (500, 1000))
+            [(500, 500), (500, 1000), (700, 1000), (700,500)]
+
+            (500, 500)  <-  (700, 500)
+                |               |
+            (500, 1000) -> (700, 1000)
+
+        We will observe the first line segment - ((500, 500), (500, 1000))
     '''
     # 1. Initial setup
     # Results will store the final list of dissected polygon segments.
@@ -263,14 +305,17 @@ def dissect(polygon: List[Tuple[int, int]],
 def segs2poly(segments: List[Tuple[Tuple[int, int], Tuple[int, int]]]
               ) -> List[Tuple[int, int]]:
     '''
-    Purpose: Reconstructs a closed polygon from line segments
-    Parameters:
-        - segments: a list of segments
+    Reconstructs a closed polygon from line segments
+
     How it works:
         - checks for continuity between segments (horizontal or vertical)
         - corrects point alignments to form a valid closed polygon
+
+    Args:
+        segments: a list of segments
+
     Returns:
-        - a list of polygon vertices in proper order
+        a list of polygon vertices in proper order
     '''
     # 1. Create a deep copy of segments to avoid modifying the original list
     # Deep copying ensures that changes to legalized do not affect segments
